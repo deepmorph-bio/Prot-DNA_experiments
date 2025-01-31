@@ -6,7 +6,7 @@ import torch
 from torch_geometric.data import Data
 
 class dmbioProtDataSetParams():
-    def __initi__(self, indir, in_file, label_dir, label_fileExt, node_feat_dir, node_feat_fileExt, edge_dir, edge_fileExt, node_cord_dir, node_cord_file_ext):
+    def __init__(self, indir, in_file, label_dir, label_fileExt, node_feat_dir, node_feat_fileExt, edge_dir, edge_fileExt, node_cord_dir, node_cord_file_ext):
         self.indir = indir
         self.in_file = in_file
         self.label_dir = label_dir
@@ -57,7 +57,7 @@ class dmbioProtDataSet():
         label_file_path = os.path.join(self.dataSetParams.indir, self.dataSetParams.label_dir, f'{protId}.{self.dataSetParams.label_fileExt}')
         node_feat_file_path = os.path.join(self.dataSetParams.indir, self.dataSetParams.node_feat_dir, f'{protId}.{self.dataSetParams.node_feat_fileExt}')
         edge_file_path = os.path.join(self.dataSetParams.indir, self.dataSetParams.edge_dir, f'{protId}.{self.dataSetParams.edge_fileExt}')
-        node_cord_file_path = os.path.join(self.dataSetParams.indir, self.dataSetParams.node_cord_dir, f'{protId}.{self.dataSetParams.node_cord_file_ext}')
+        node_cord_file_path = os.path.join(self.dataSetParams.indir, self.dataSetParams.node_cord_dir, f'{protId}.{self.dataSetParams.node_cord_fileExt}')
 
         if not Path(label_file_path).exists():
                 raise FileNotFoundError(f"{protId}.{self.dataSetParams.label_fileExt} not found at {self.dataSetParams.label_dir}")
@@ -66,7 +66,7 @@ class dmbioProtDataSet():
         if not Path(edge_file_path).exists():
                 raise FileNotFoundError(f"{protId}.{self.dataSetParams.edge_fileExt} not found at {self.dataSetParams.edge_dir}")
         if not Path(node_cord_file_path).exists():
-                raise FileNotFoundError(f"{protId}.{self.dataSetParams.node_cord_dir} not found at {self.dataSetParams.edge_dir}")
+                raise FileNotFoundError(f"{protId}.{self.dataSetParams.node_cord_fileExt} not found at {self.dataSetParams.node_cord_dir}")
 
         #create labels
         # Load the file
@@ -113,7 +113,7 @@ class dmbioProtDataSet():
         weights = np.concatenate([weights, weights])
 
         # Convert to PyTorch tensors
-        edge_index = torch.tensor([src, dst], dtype=torch.long)
+        edge_index = torch.tensor(np.stack([src, dst]), dtype=torch.long)
         edge_weights = torch.tensor(weights, dtype=torch.float32).view(-1, 1)
 
         #Cordinate features
@@ -151,3 +151,35 @@ class dmbioProtDataSet():
         )
         
         return data
+    
+
+if __name__ == "__main__":
+    #Test case
+    import configparser
+    #Create your own config with key value pair and change the path of ini file
+    config_path = '/teamspace/studios/this_studio/DeepDive/Prot-DNA_experiments/test/testDatasetConfig.ini'
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    config_section = config['DEFAULT']
+
+    for key in config_section:
+        print(f'{key}: {config_section[key]}')
+
+    dsParams = dmbioProtDataSetParams(
+        indir = config_section['indir'],
+        in_file = config_section['in_file'],
+        label_dir = config_section['label_dir'],
+        label_fileExt = config_section['label_fileExt'],
+        node_feat_dir = config_section['node_feat_dir'],
+        node_feat_fileExt = config_section['node_feat_fileExt'],
+        edge_dir = config_section['edge_dir'],
+        edge_fileExt = config_section['edge_fileExt'],
+        node_cord_dir = config_section['node_cord_dir'],
+        node_cord_file_ext = config_section['node_cord_file_ext']
+    )
+    datasset = dmbioProtDataSet(dsParams)
+
+    print('\n\nBuilding one graph...')
+    print(datasset.getgraphbyid(0))
+    print('\n\nRetreiving the same graph...')
+    print(datasset.getgraphbyid(0))
