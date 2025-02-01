@@ -47,7 +47,7 @@ class dmbioProtDataSet():
                 for line in flines:
                     tgt_name = line.split('.')[0].strip()
                     targets.append(tgt_name)
-                    dataset.append(None)
+                    dataset.append(self.buildData(tgt_name))
         except Exception as e:
             raise Exception(f'Error loading target names from file {input_list_path}: {e}')
         return targets, dataset
