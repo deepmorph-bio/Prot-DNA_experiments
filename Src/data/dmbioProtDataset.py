@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 import numpy as np
 import torch
-from torch_geometric.data import Data
+from torch_geometric.data import Data, Batch
 
 class dmbioProtDataSetParams():
     def __init__(self, indir, in_file, label_dir, label_fileExt, node_feat_dir, node_feat_fileExt, edge_dir, edge_fileExt, node_cord_dir, node_cord_file_ext):
@@ -36,6 +36,10 @@ class dmbioProtDataSet():
         
         return self.dataset[idx]
 
+    def load_all(self):
+        for l_idx in range(len(self.targets)):
+            self.getgraphbyid(l_idx)
+
     def load_targets(self):
         input_list_path = os.path.join(self.dataSetParams.indir, self.dataSetParams.in_file)
         targets = []
@@ -47,7 +51,7 @@ class dmbioProtDataSet():
                 for line in flines:
                     tgt_name = line.split('.')[0].strip()
                     targets.append(tgt_name)
-                    dataset.append(self.buildData(tgt_name))
+                    dataset.append(None)
         except Exception as e:
             raise Exception(f'Error loading target names from file {input_list_path}: {e}')
         return targets, dataset
@@ -151,6 +155,23 @@ class dmbioProtDataSet():
         
         return data
     
+    def split_train_test_validation(self, train_ratio=0.7, validation_ratio=0.1):
+        # Split the data into training , validation and test
+        num_samples = len(self.targets)
+        training = round(num_samples * train_ratio) 
+        validation = round(num_samples * validation_ratio)
+        test = num_samples - training - validation
+        # Run load all in case it was not explicitly called
+        self.load_all()
+        training_sets = self.dataset[:training]
+        validation_sets = self.dataset[training: training+validation]
+        test_sets = self.dataset[training+validation:]
+        #prepare batches 
+        batch_training = Batch().from_data_list(training_sets)
+        batch_validation = Batch().from_data_list(validation_sets)
+        batch_test = Batch().from_data_list(test_sets)
+
+        return batch_training, batch_validation, batch_test
 
 if __name__ == "__main__":
     #Test case

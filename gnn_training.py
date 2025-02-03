@@ -6,6 +6,7 @@ import torch.optim as optim
 import pytorch_lightning as pl
 import Src.model.dmBioGNN as dmBioModel
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from Src.data.dmbioProtDataset import dmbioProtDataSetParams, dmbioProtDataSet
 
 device_count = torch.cuda.device_count() - 1 if torch.cuda.is_available() else 0
 device = torch.device(f'cuda:{device_count}') if torch.cuda.is_available() else torch.device('cpu')
@@ -13,10 +14,11 @@ device = torch.device(f'cuda:{device_count}') if torch.cuda.is_available() else 
 
 class NodeLevelGNN(pl.LightningModule):
 
-    def __init__(self, model_name, **model_kwargs):
+    def __init__(self, model_name, dsParams : dmbioProtDataSetParams, **model_kwargs):
         super().__init__()
         # Saving hyperparameters
         self.save_hyperparameters()
+        self.dsParams = dsParams
 
         if model_name == "MLP":
             self.model = dmBioModel.MLPModel(**model_kwargs)
@@ -24,6 +26,18 @@ class NodeLevelGNN(pl.LightningModule):
             self.model = dmBioModel.GNNModel(**model_kwargs)
 
         self.loss_module = nn.BCELoss() 
+    def setup(self):
+        self.dataset = dmbioProtDataSet(self.dsParams)
+        self.traing_batch, self.validation_batch, self.test_batch = self.dataset.split_train_test_validation()
+
+    def train_dataloader(self):
+        return self.traing_batch
+    
+    def val_dataloader(self):
+        return self.validation_batch
+    
+    def test_dataloader(self):
+        return self.test_batch
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -53,7 +67,12 @@ class NodeLevelGNN(pl.LightningModule):
         # We use SGD here, but Adam works as well
         optimizer = optim.SGD(self.parameters(), lr=0.1, momentum=0.9, weight_decay=2e-3)
         #optimizer = torch.optim.Adam(self.parameters(), lr=0.01, weight_decay=5e-4)
-        return optimizer
+        lr_scheduler = 
+        {
+            'scheduker' : optim.lr_scheduler.CosineAnnealingLR(optimizer, self.epoch),
+            'name': 'cosine_annealing'
+        }
+        return [optimizer], [lr_scheduler]
 
     def training_step(self, batch, batch_idx):
         loss , tpr , accuracy, precision, f_1 = self.forward(batch)
