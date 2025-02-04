@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 import numpy as np
 import torch
-from torch_geometric.data import Data, Batch
+from torch_geometric.data import Data
+from torch_geometric.loader import  DataLoader
 
 class dmbioProtDataSetParams():
     def __init__(self, indir, in_file, label_dir, label_fileExt, node_feat_dir, node_feat_fileExt, edge_dir, edge_fileExt, node_cord_dir, node_cord_file_ext):
@@ -155,7 +156,7 @@ class dmbioProtDataSet():
         
         return data
     
-    def split_train_test_validation(self, train_ratio=0.7, validation_ratio=0.1):
+    def split_train_test_validation(self, train_ratio=0.7, validation_ratio=0.1, batch_size=1):
         # Split the data into training , validation and test
         num_samples = len(self.targets)
         training = round(num_samples * train_ratio) 
@@ -167,9 +168,9 @@ class dmbioProtDataSet():
         validation_sets = self.dataset[training: training+validation]
         test_sets = self.dataset[training+validation:]
         #prepare batches 
-        batch_training = Batch().from_data_list(training_sets)
-        batch_validation = Batch().from_data_list(validation_sets)
-        batch_test = Batch().from_data_list(test_sets)
+        batch_training = DataLoader(training_sets, batch_size= batch_size)
+        batch_validation = DataLoader(validation_sets, batch_size= batch_size)
+        batch_test = DataLoader(test_sets, batch_size= batch_size)
 
         return batch_training, batch_validation, batch_test
 
