@@ -19,9 +19,10 @@ class dmbioProtDataSetParams():
         self.node_cord_fileExt = node_cord_file_ext
 
 class dmbioProtDataSet():
-    def __init__(self, dsParams):
+    def __init__(self, dsParams, num_features):
         #Set parameter for building dataset
         self.dataSetParams = dsParams
+        self.num_features = num_features
         #Load target list (list of Protien's)
         self.targets, self.dataset = self.load_targets()
 
@@ -157,16 +158,20 @@ class dmbioProtDataSet():
         return data
     
     def split_train_test_validation(self, train_ratio=0.7, validation_ratio=0.1, batch_size=1):
+        # Run load all in case it was not explicitly called
+        self.load_all()
+        #Filter out if num features is not equalto the number of features of the dataset
+        dataset_filtered = [graph for graph in self.dataset if graph.num_features == self.num_features and graph.num_nodes == graph.y.shape[0] and graph.y.shape[1] == 1]
+
         # Split the data into training , validation and test
-        num_samples = len(self.targets)
+        num_samples = len(dataset_filtered)
         training = round(num_samples * train_ratio) 
         validation = round(num_samples * validation_ratio)
         test = num_samples - training - validation
-        # Run load all in case it was not explicitly called
-        self.load_all()
-        training_sets = self.dataset[:training]
-        validation_sets = self.dataset[training: training+validation]
-        test_sets = self.dataset[training+validation:]
+
+        training_sets = dataset_filtered[:training]
+        validation_sets = dataset_filtered[training: training+validation]
+        test_sets = dataset_filtered[training+validation:]
         #prepare batches 
         batch_training = DataLoader(training_sets, batch_size= batch_size)
         batch_validation = DataLoader(validation_sets, batch_size= batch_size)
@@ -198,7 +203,8 @@ if __name__ == "__main__":
         node_cord_dir = config_section['node_cord_dir'],
         node_cord_file_ext = config_section['node_cord_file_ext']
     )
-    datasset = dmbioProtDataSet(dsParams)
+    req_num_features = config_section.getint('num_features')
+    datasset = dmbioProtDataSet(dsParams, req_num_features)
 
     print('\n\nBuilding one graph...')
     print(datasset.getgraphbyid(0))

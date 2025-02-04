@@ -11,10 +11,11 @@ import traceback
 from argparse import ArgumentParser
 import configparser
 import os 
-
+import logging
+from datetime import datetime
 
 class NodeLevelGNN(pl.LightningModule):
-    def __init__(self, model_name, epoch, **model_kwargs):
+    def __init__(self, model_name, epoch, filelogger ,**model_kwargs):
         super().__init__()
         # Saving hyperparameters
         self.save_hyperparameters()
@@ -22,7 +23,7 @@ class NodeLevelGNN(pl.LightningModule):
         self.hidden_layers = model_kwargs['c_hiddens']
         self.c_out = model_kwargs['c_out']
         self.epoch = epoch
-
+        self.filelogger = filelogger
         if model_name == "MLP":
             self.model = dmBioModel.MLPModel(**model_kwargs)
         else:
@@ -67,28 +68,30 @@ class NodeLevelGNN(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         loss , tpr , accuracy, precision, f_1 = self.forward(batch)
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        # self.log('train_tpr', tpr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        # self.log('train_accuracy', accuracy, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('train_tpr', tpr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('train_accuracy', accuracy, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         self.log('train_precision', precision, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        #self.log('train_f1', f_1, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-
+        self.log('train_f1', f_1, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.filelogger.info(f"Train Loss: {loss}, TPR: {tpr}, Accuracy: {accuracy}, Precision: {precision}, F1: {f_1}, Epoch: {self.current_epoch}, Batch: {batch_idx}")
         return loss
 
     def validation_step(self, batch, batch_idx):
         _ , tpr , accuracy, precision, f_1 = self.forward(batch)
-        # self.log('val_tpr', tpr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        # self.log('val_accuracy', accuracy, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_tpr', tpr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_accuracy', accuracy, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         self.log('val_precision', precision, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        #self.log('val_f1', f_1, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_f1', f_1, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.filelogger.info(f"Validation TPR: {tpr}, Accuracy: {accuracy}, Precision: {precision}, F1: {f_1}, Epoch: {self.current_epoch}, Batch: {batch_idx}")
 
     def test_step(self, batch, batch_idx):
         _ , tpr , accuracy, precision, f_1 = self.forward(batch)
-        #self.log('test_tpr', tpr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        #self.log('test_accuracy', accuracy, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('test_tpr', tpr, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('test_accuracy', accuracy, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         self.log('test_precision', precision, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        #self.log('test_f1', f_1, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('test_f1', f_1, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.filelogger.info(f"Test TPR: {tpr}, Accuracy: {accuracy}, Precision: {precision}, F1: {f_1}, Batch: {batch_idx}")
 
-def train(training_batch, validation_batch, test_batch, num_features ,args):
+def train(training_batch, validation_batch, num_features, logger ,args):
     pl.seed_everything(42)
     device_count = torch.cuda.device_count() - 1 if torch.cuda.is_available() else 0
     device = torch.device(f'cuda:{device_count}') if torch.cuda.is_available() else torch.device('cpu')
@@ -99,9 +102,10 @@ def train(training_batch, validation_batch, test_batch, num_features ,args):
     if not os.path.exists(args.checkPtPath):
         os.makedirs(root_dir, exist_ok=True)
     epochs = int(args.epoch) 
+
     if torch.cuda.is_available():
         trainer =pl.Trainer(default_root_dir=root_dir,
-                            callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_precision")],
+                            callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_precision", filename=args.Model + '-{epoch}-{val_loss:.2f}')],
                             accelerator = "gpu",
                             max_epochs = epochs,
                             devices= device_count,
@@ -109,7 +113,7 @@ def train(training_batch, validation_batch, test_batch, num_features ,args):
                             )
     else:
         trainer = pl.Trainer(default_root_dir=root_dir,
-                callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_precision")],
+                callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_precision", filename=args.Model + '-{epoch}-{val_loss:.2f}')],
                 accelerator = "cpu",
                 max_epochs = epochs,
                 enable_progress_bar = True
@@ -117,7 +121,7 @@ def train(training_batch, validation_batch, test_batch, num_features ,args):
 
     
     pl.seed_everything()
-    model = NodeLevelGNN(model_name = args.Model, epoch = epochs, c_in =c_in, c_hiddens = hidden_layers, c_out = 1)
+    model = NodeLevelGNN(model_name = args.Model, epoch = epochs, filelogger=logger ,c_in =c_in, c_hiddens = hidden_layers, c_out = 1)
     trainer.fit(model, training_batch, validation_batch)
 
 def test(args):
@@ -130,15 +134,29 @@ def test(args):
 
 
 if __name__ == "__main__":
-    try:
-        parser = ArgumentParser()
-        parser.add_argument("--dsConfigPath", default=None)
-        parser.add_argument("--checkPtPath", default=None)
-        parser.add_argument("--Model", default=None)
-        parser.add_argument("--train", default=True)
-        parser.add_argument("--epoch", default=10)
-        args = parser.parse_args()
+    parser = ArgumentParser()
+    parser.add_argument("--dsConfigPath", default=None)
+    parser.add_argument("--checkPtPath", default=None)
+    parser.add_argument("--Model", default=None)
+    parser.add_argument("--train", default=True)
+    parser.add_argument("--epoch", default=10)
+    args = parser.parse_args()
 
+    logger = logging.getLogger("node_level_gnn_looger")
+    logger.setLevel(logging.INFO)
+    # Create a file handler
+    if not os.path.exists(args.checkPtPath + "/logs"):
+        os.makedirs(args.checkPtPath+ "/logs", exist_ok=True)
+
+    log_dir = os.path.join(args.checkPtPath, f"logs/training_{args.Model}_{datetime.now()}.log")
+    file_handler = logging.FileHandler(log_dir)
+    file_handler.setLevel(logging.INFO)
+    # Create a formatter and add it to the handler
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    # Add the handler to the logger
+    logger.addHandler(file_handler)
+    try:
         config = configparser.ConfigParser()
         config.read(args.dsConfigPath)
         config_section = config['DEFAULT']
@@ -154,17 +172,18 @@ if __name__ == "__main__":
             node_cord_dir = config_section['node_cord_dir'],
             node_cord_file_ext = config_section['node_cord_file_ext']
         )
-        dmdataset = dmbioProtDataSet(dsParams)
+        req_num_features = config_section.getint('num_features')
+        dmdataset = dmbioProtDataSet(dsParams, req_num_features)
         print("Loading Dataset!")
         dmdataset.load_all()
         training_batch, validation_batch, test_batch = dmdataset.split_train_test_validation()
         print(f"Complete loading Dataset! Graph Count: {len(dmdataset.targets)}")
         num_features = dmdataset.dataset[0].num_features
-
         if args.train:
-            train(training_batch, validation_batch, test_batch, num_features, args)
+            train(training_batch, validation_batch, num_features, logger, args)
         else:
             test(args)
     except Exception as e:
         print(f'***Exception** : {e}')
         traceback.print_exc()
+        logger.error(f'Exception: {e} , {traceback.format_exc()}')
