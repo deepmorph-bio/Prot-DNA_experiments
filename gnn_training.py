@@ -7,6 +7,8 @@ import pytorch_lightning as pl
 import Src.model.dmBioGNN as dmBioModel
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from Src.data.dmbioProtDataset import dmbioProtDataSetParams, dmbioProtDataSet
+from Src.data.dmBioProtDatasetLoader import dmbioProtDatasetloader
+
 import traceback
 from argparse import ArgumentParser
 import configparser
@@ -105,7 +107,7 @@ def train(training_batch, validation_batch, num_features, logger ,args):
 
     if torch.cuda.is_available():
         trainer =pl.Trainer(default_root_dir=root_dir,
-                            callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_precision", filename=args.Model + '-{epoch}-{val_loss:.2f}')],
+                            callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_accuracy", filename=args.Model + '-{current_epoch}-{val_accuracy:.2f}')],
                             accelerator = "gpu",
                             max_epochs = epochs,
                             devices= device_count,
@@ -113,11 +115,11 @@ def train(training_batch, validation_batch, num_features, logger ,args):
                             )
     else:
         trainer = pl.Trainer(default_root_dir=root_dir,
-                callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_precision", filename=args.Model + '-{epoch}-{val_loss:.2f}')],
+                callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_accuracy", filename=args.Model + '-{current_epoch}-{val_accuracy:.2f}')],
                 accelerator = "cpu",
                 max_epochs = epochs,
                 enable_progress_bar = True
-                )
+            )
 
     
     pl.seed_everything()
@@ -157,28 +159,10 @@ if __name__ == "__main__":
     # Add the handler to the logger
     logger.addHandler(file_handler)
     try:
-        config = configparser.ConfigParser()
-        config.read(args.dsConfigPath)
-        config_section = config['DEFAULT']
-        dsParams = dmbioProtDataSetParams(
-            indir = config_section['indir'],
-            in_file = config_section['in_file'],
-            label_dir = config_section['label_dir'],
-            label_fileExt = config_section['label_fileExt'],
-            node_feat_dir = config_section['node_feat_dir'],
-            node_feat_fileExt = config_section['node_feat_fileExt'],
-            edge_dir = config_section['edge_dir'],
-            edge_fileExt = config_section['edge_fileExt'],
-            node_cord_dir = config_section['node_cord_dir'],
-            node_cord_file_ext = config_section['node_cord_file_ext']
-        )
-        req_num_features = config_section.getint('num_features')
-        dmdataset = dmbioProtDataSet(dsParams, req_num_features)
-        print("Loading Dataset!")
-        dmdataset.load_all()
-        training_batch, validation_batch, test_batch = dmdataset.split_train_test_validation()
-        print(f"Complete loading Dataset! Graph Count: {len(dmdataset.targets)}")
-        num_features = dmdataset.dataset[0].num_features
+        dataset_loader = dmbioProtDatasetloader(args.dsConfigPath)
+        training_batch, validation_batch, test_batch = dataset_loader.split_train_test_validation()
+        num_features = dataset_loader.num_features
+
         if args.train:
             train(training_batch, validation_batch, num_features, logger, args)
         else:

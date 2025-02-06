@@ -5,6 +5,7 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.loader import  DataLoader
 
+
 class dmbioProtDataSetParams():
     def __init__(self, indir, in_file, label_dir, label_fileExt, node_feat_dir, node_feat_fileExt, edge_dir, edge_fileExt, node_cord_dir, node_cord_file_ext):
         self.indir = indir
