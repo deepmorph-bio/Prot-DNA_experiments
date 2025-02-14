@@ -12,50 +12,45 @@ from datetime import datetime
 
 
 class dmbioProtAffinityEGNN(L.LightningModule):
-    def __init__(self, fileLogger, epoch ,**model_kwargs):
+    def __init__(self, fileLogger, t_max ,**model_kwargs):
         super().__init__()
         self.save_hyperparameters()
         self.model = egnn.EGNN(**model_kwargs)
-        self.loss_module = nn.BCELoss() 
+        self.loss_module = nn.BCEWithLogitsLoss()
         self.fileLogger = fileLogger
-        self.epoch = epoch
+        self.t_max = t_max
         
 
     def training_step(self, batch, batch_idx):
         x, edge_index, pos, edge_attr ,y = batch.x, batch.edge_index, batch.pos, batch.edge_attr, batch.y
         h, x = self.model(x, pos, edge_index, edge_attr)
-        h_clean = torch.nan_to_num_(h, nan=0.0)
-        pred = nn.Sigmoid()(h_clean)
-        loss = self.loss_module(pred, y)
+        loss = self.loss_module(h, y)
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         self.fileLogger.info(f"Training Loss: {loss}, Batch: {batch_idx}, Epoch: {self.current_epoch}")
         return loss
     
     def validation_step(self, batch, batch_idx):
-        loss, tpr = self._shared_eval_step(batch, batch_idx)
-        metrices = {'val_loss': loss, 'val_tpr': tpr}
+        loss, tpr,f_n = self._shared_eval_step(batch, batch_idx)
+        metrices = {'val_loss': loss, 'val_tpr': tpr, 'val_f_n': f_n}
         self.log_dict(metrices, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        self.fileLogger.info(f"Validation Loss: {loss}, Validation TPR: {tpr}, Batch: {batch_idx}, Epoch: {self.current_epoch}")
+        self.fileLogger.info(f"Validation Loss: {loss}, Validation TPR: {tpr}, False Neg. {f_n} ,Batch: {batch_idx}, Epoch: {self.current_epoch}")
         return metrices
 
     def test_step(self, batch, batch_idx):    
-        loss, tpr = self._shared_eval_step(batch, batch_idx)
-        metrices = {'test_loss': loss, 'test_tpr': tpr}
+        loss, tpr, f_n = self._shared_eval_step(batch, batch_idx)
+        metrices = {'test_loss': loss, 'test_tpr': tpr, 'test_f_n': f_n}
         self.log_dict(metrices, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return metrices
 
     def _shared_eval_step(self, batch, batch_idx):
         x, edge_index, pos, edge_attr ,y = batch.x, batch.edge_index, batch.pos, batch.edge_attr, batch.y
         h, x = self.model(x, pos, edge_index, edge_attr)
-        h_clean = torch.nan_to_num_(h, nan=0.0)
-        pred = torch.sigmoid(h_clean)  
         
         # Compute loss
-        loss = self.loss_module(pred, y)
+        loss = self.loss_module(h, y)
         
         # Process predictions
-        pred = pred.squeeze()
-        pred = (pred >= 0.5).int().to(self.device)  # Directly create tensor on correct device
+        pred = (torch.sigmoid(h) >= 0.5).int().to(self.device) # Directly create tensor on correct device
 
         # Convert y to the correct format
         y_int = y.to(torch.int64).squeeze()
@@ -67,22 +62,20 @@ class dmbioProtAffinityEGNN(L.LightningModule):
         # Compute True Positive Rate (TPR)
         tpr = t_p / (t_p + f_n + 1e-8)  # Add small epsilon to avoid division by zero
 
-        return loss, tpr
+        return loss, tpr , f_n
 
     
     def configure_optimizers(self):
-        optimizer = torch.optim.SGD(self.parameters(), lr=0.1, momentum=0.9, weight_decay=2e-3)
-        #optimizer = torch.optim.Adam(self.parameters(), lr=0.01, weight_decay=5e-4)
+        #optimizer = torch.optim.SGD(self.parameters(), lr=5e-4, momentum=0.9, weight_decay=2e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=4e-4, weight_decay=1e-4)
         lr_scheduler = {
-            'scheduler' : torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, self.epoch),
+            'scheduler' : torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, self.t_max),
             'name': 'cosine_annealing'
         }
-        return [optimizer], [lr_scheduler]
+        return [optimizer] , [lr_scheduler]
 
 def main(fileLogger, hparams):
     L.seed_everything(42)
-    #device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    #device = torch.device(f'cuda:{device_count - 1}') if torch.cuda.is_available() else torch.device('cpu')
     
     dataset_loader = dmbioProtDatasetloader(hparams.dsConfigPath)
     train, val , test = dataset_loader.split_train_test_validation(batch_size = int(hparams.batch))
@@ -91,6 +84,7 @@ def main(fileLogger, hparams):
     if not os.path.exists(hparams.checkPtPath):
         os.makedirs(root_dir, exist_ok=True)
     epochs = int(hparams.epoch)
+    tmax = int(hparams.tmax)
 
     trainer =L.Trainer(default_root_dir=root_dir,
                             callbacks=[ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_tpr", filename='EGNNModel'),
@@ -98,8 +92,7 @@ def main(fileLogger, hparams):
                             max_epochs = epochs,
                             enable_progress_bar = True
                         )
-    model = dmbioProtAffinityEGNN(fileLogger, epochs ,in_node_nf=dataset_loader.num_features, hidden_nf=1028, out_node_nf=1, in_edge_nf=1)
-    #model.to(device)
+    model = dmbioProtAffinityEGNN(fileLogger,tmax ,in_node_nf=dataset_loader.num_features, hidden_nf=512, out_node_nf=1, in_edge_nf=1)
     trainer.fit(model, train, val)
 
 if __name__ == "__main__":
@@ -108,6 +101,8 @@ if __name__ == "__main__":
     parser.add_argument("--checkPtPath", default=None)
     parser.add_argument("--batch", default=1)
     parser.add_argument("--epoch", default=10)
+    parser.add_argument("--tmax", default=100)
+
     args = parser.parse_args()
 
     logger = logging.getLogger("dmbioProtAffinityEGNN_looger")
