@@ -49,8 +49,9 @@ class dmbioProtAffinityEGNN(L.LightningModule):
         # Compute loss
         loss = self.loss_module(h, y)
         
+        
         # Process predictions
-        pred = (torch.sigmoid(h) >= 0.5).int().to(self.device) # Directly create tensor on correct device
+        pred = (torch.sigmoid(h).squeeze() >= 0.5).int().to(self.device) # Directly create tensor on correct device
 
         # Convert y to the correct format
         y_int = y.to(torch.int64).squeeze()
@@ -94,15 +95,17 @@ def main(fileLogger, hparams):
                             enable_progress_bar = True
                         )
 
+    hidden_nf = int(args.hidden_nf)
+    n_layers = int(args.n_layers)
     if int(hparams.version)!= 99:
         model_path = os.path.join(hparams.checkPtPath,"ProtDNAAffinity_EGNN", "lightning_logs",f"version_{hparams.version}","checkpoints","EGNNModel.ckpt")
         if os.path.exists(model_path):
             logger.info(f"Loading Model from {model_path}")
             model = dmbioProtAffinityEGNN.load_from_checkpoint(model_path, fileLogger = fileLogger)
         else:
-            model = dmbioProtAffinityEGNN(fileLogger, len(train) ,in_node_nf=dataset_loader.num_features, hidden_nf=512, out_node_nf=1, in_edge_nf=1)
+            model = dmbioProtAffinityEGNN(fileLogger, len(train) ,in_node_nf=dataset_loader.num_features, hidden_nf=hidden_nf, out_node_nf=1, in_edge_nf=1,attention=True, n_layers=n_layers)
     else:
-        model = dmbioProtAffinityEGNN(fileLogger, len(train) ,in_node_nf=dataset_loader.num_features, hidden_nf=512, out_node_nf=1, in_edge_nf=1)
+        model = dmbioProtAffinityEGNN(fileLogger, len(train) ,in_node_nf=dataset_loader.num_features, hidden_nf=hidden_nf, out_node_nf=1, in_edge_nf=1,attention=True, n_layers=n_layers)
 
     trainer.fit(model, train, val)
 
@@ -128,7 +131,7 @@ def test(fileLogger,hparams):
         model_path = os.path.join(hparams.checkPtPath,"ProtDNAAffinity_EGNN", "lightning_logs",f"version_{hparams.version}","checkpoints","EGNNModel.ckpt")
         if os.path.exists(model_path):
             logger.info(f"Loading Model from {model_path}")
-            model = dmbioProtAffinityEGNN.load_from_checkpoint(model_path, fileLogger = fileLogger)
+            model = dmbioProtAffinityEGNN.load_from_checkpoint(model_path, fileLogger = fileLogger,)
             test_result = trainer.test(model, test)
             logger.info(f"Test Results:{test_result}")
         else:
@@ -145,6 +148,8 @@ if __name__ == "__main__":
     parser.add_argument("--epoch", default=10)
     parser.add_argument("--version", default=-99)
     parser.add_argument("--test", default=False)
+    parser.add_argument("--hidden_nf", default=768)
+    parser.add_argument("--n_layers", default=10)
 
     args = parser.parse_args()
 
