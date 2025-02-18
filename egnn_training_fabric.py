@@ -3,20 +3,76 @@ from watermark import watermark
 import torch
 import torch.nn as nn
 import Src.model.egnn_clean as egnn
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from Src.data.dmBioProtDatasetLoader import dmbioProtDatasetloader
 import traceback
 from argparse import ArgumentParser
 import os 
 import logging
 from datetime import datetime
-import os
 import time
 from torch import tensor
 from torchmetrics.classification import BinaryRecall
 from tqdm import tqdm
+from torchinfo import summary
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
 
-def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_loader, epochs, fabric, device, fileLogger):
+def save_checkpoint_callback(epoch, loss, model, optimizer, checkPtPath, version ,save_frequency=10):
+    if (epoch + 1) % int(save_frequency) == 0:
+        model_path = os.path.join(checkPtPath,"fabric_logs",f"version_{version}","checkpoints")
+        if not os.path.exists(model_path):
+            os.makedirs(model_path, exist_ok=True)
+        model_path = os.path.join(model_path, f"EGNNModel_{epoch + 1}.pth")
+        torch.save({
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': loss,
+            'hidden_nf': model.hidden_nf,
+            'n_layers': model.n_layers
+        }, model_path)
+
+def plot_training_history(loss_history, tpr_history, val_loss_history, val_tpr_history, checkPtPath, version):
+    # Example training history (replace with actual values)
+    epochs = list(range(1, len(loss_history) + 1))
+
+    # Create a DataFrame for easier plotting with seaborn
+    history_df = pd.DataFrame({
+        'Epoch': epochs * 2,  # Duplicate epochs for train & val
+        'Loss': loss_history + val_loss_history,
+        'TPR': tpr_history + val_tpr_history,
+        'Type': ['Train'] * len(loss_history) + ['Validation'] * len(val_loss_history)
+    })
+
+    # Set Seaborn style
+    sns.set_style("whitegrid")
+
+    # Create figure and axes
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+
+    # Plot Loss
+    sns.lineplot(data=history_df, x='Epoch', y='Loss', hue='Type', ax=ax1, marker='o', palette=['blue', 'orange'])
+    ax1.set_ylabel('Loss', color='blue')
+    ax1.tick_params(axis='y', labelcolor='blue')
+
+    # Create second y-axis for TPR
+    ax2 = ax1.twinx()
+    sns.lineplot(data=history_df, x='Epoch', y='TPR', hue='Type', ax=ax2, marker='s', linestyle='dashed', palette=['green', 'red'])
+    ax2.set_ylabel('TPR', color='green')
+    ax2.tick_params(axis='y', labelcolor='green')
+
+    # Titles and layout
+    plt.title("Training History: Loss & TPR")
+    fig.tight_layout()
+
+    image_path = os.path.join(checkPtPath,"fabric_logs",f"version_{version}","checkpoints","image")
+    if not os.path.exists(image_path):
+        os.makedirs(image_path, exist_ok=True)
+    image_path = os.path.join(image_path, "training_history.png")
+    plt.savefig(image_path)
+
+def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_loader, epochs, fabric, device, fileLogger, save_checkpoint_callback, **kwargs):
     loss_history = [0.0] * epochs
     train_tpr_history = [0.0] * epochs
     val_loss_history = [0.0] * epochs
@@ -24,6 +80,15 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
 
     metric = BinaryRecall()
     metric.to(device)
+
+    best_val_loss = float("inf")
+    early_stopping_counter = 0
+    
+    checkptpath = kwargs.get("checkPtPath", "")
+    version = kwargs.get("version", "1")
+    save_frequency = kwargs.get("save_frequency", 10)
+    patience = kwargs.get("patience", 0)
+    min_delta = kwargs.get("min_delta", 0.00001)
 
     for epoch in range(epochs):
         model.train()
@@ -51,6 +116,9 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
                 # Update progress bar
                 loop.set_description(f"Epoch [{epoch}/{epochs}]")
                 loop.set_postfix(loss=loss.item())
+            
+            if batch_idx % 25 == 0:
+                fileLogger.info(f"Epoch {epoch}, Batch {batch_idx}: Loss = {loss.item():.4f}, Recall = {tpr.item():.4f}")
 
          ### MORE LOGGING
         model.eval()
@@ -79,6 +147,19 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
         Val Loss = {val_loss_history[epoch]:.4f}, \
         Recall = {val_tpr_history[epoch]:.4f}")        
 
+        # Checkpoint Saving
+        save_checkpoint_callback(epoch, val_loss_history[epoch], model, optimizer, checkptpath, version, save_frequency)
+        # Early Stopping
+        if val_loss_history[epoch] < best_val_loss - min_delta:
+            best_val_loss = val_loss_history[epoch]
+            early_stopping_counter = 0  # Reset patience counter
+        else:
+            early_stopping_counter += 1
+
+        if early_stopping_counter >= patience:
+            fileLogger.info(f"Early stopping triggered at epoch {epoch}")
+            break
+        
     return loss_history, train_tpr_history, val_loss_history, val_tpr_history
 
 def test_loop(model, test_loader, device, fileLogger):
@@ -131,10 +212,18 @@ def main(fileLogger, hparams):
     hidden_nf = int(hparams.hidden_nf)
     n_layers = int(hparams.n_layers)
     
-    
     #########################################
     ### 2 Initializing the Model
     #########################################
+    checkpoint = None
+    if hparams.load_from_path and os.path.exists(hparams.load_from_path):
+        logger.info(f"Loading checkpt from {hparams.load_from_path}")
+        checkpoint = torch.load(hparams.load_from_path)
+        if 'hidden_nf' in checkpoint:
+            hidden_nf = checkpoint['hidden_nf']
+        if 'n_layers' in checkpoint:
+            n_layers = checkpoint['n_layers']
+
 
     model = egnn.EGNN(in_node_nf=dataset_loader.num_features,
      hidden_nf=hidden_nf, out_node_nf=1, 
@@ -143,11 +232,24 @@ def main(fileLogger, hparams):
 
     loss_module = nn.BCEWithLogitsLoss()
 
+    if checkpoint:
+        logger.info(f"Loading state dict from checkpoint")
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.to(device)
+        model.eval()
+        fileLogger.info(summary(model))
+        
+
     optimizer = torch.optim.SGD(
      model.parameters(), 
      lr=5e-4,
      momentum=0.9,
      weight_decay=1e-4)
+
+    if checkpoint:
+        logger.info(f"Loading optimizer state dict from checkpoint")
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
 
     lr_steps_per_epoch = len(train)
     max_epochs = int(hparams.epoch)
@@ -158,6 +260,11 @@ def main(fileLogger, hparams):
             epochs=max_epochs)
 
     model, optimizer = fabric.setup(model, optimizer)
+
+    
+
+    # Instantiate callbacks
+    save_checkpoint = lambda epoch, loss, model, optimizer, checkptpath, version, save_frequency: save_checkpoint_callback(epoch, loss, model, optimizer, checkptpath, version ,save_frequency)
 
     #########################################
     ### 3 Finetuning
@@ -173,7 +280,14 @@ def main(fileLogger, hparams):
     max_epochs,
     fabric,
     device,
-    fileLogger)
+    fileLogger,
+    save_checkpoint,
+    checkptpath = hparams.checkPtPath,
+    version = hparams.version,
+    save_frequency = hparams.save_frequency,
+    min_delta  = hparams.es_min_delta,
+    patience = hparams.es_patience
+    )
 
     end = time.time()
     elapsed = end-start
@@ -183,7 +297,19 @@ def main(fileLogger, hparams):
 
     test_loop(model, test_loader, device, fileLogger)
 
+    logger.info('******************************')
+    logger.info(f'Loss history: {loss_history}')
+    logger.info(f'TPR history: {tpr_history}')
+    logger.info(f'Val Loss history: {val_loss_history}')
+    logger.info(f'Val TPR history: {val_tpr_history}')
+    logger.info('******************************')
+
+    plot_training_history(loss_history, tpr_history, val_loss_history, val_tpr_history, hparams.checkPtPath, hparams.version)
+
 if __name__ == "__main__":
+    now = datetime.now()
+    formatted_datetime = now.strftime("%d%m%H%M")
+
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     parser = ArgumentParser()
     parser.add_argument("--dsConfigPath", default=None)
@@ -191,6 +317,11 @@ if __name__ == "__main__":
     parser.add_argument("--epoch", default=10)
     parser.add_argument("--hidden_nf", default=768)
     parser.add_argument("--n_layers", default=10)
+    parser.add_argument("--version", default=formatted_datetime)
+    parser.add_argument("--save_frequency", default=10)
+    parser.add_argument("--es_min_delta", default=0.000001)
+    parser.add_argument("--es_patience", default=3)
+    parser.add_argument("--load_from_path", default=None)
 
     args = parser.parse_args()
 
@@ -200,7 +331,12 @@ if __name__ == "__main__":
     if not os.path.exists(args.checkPtPath + "/logs"):
         os.makedirs(args.checkPtPath+ "/logs", exist_ok=True)
 
-    log_dir = os.path.join(args.checkPtPath, f"logs/fabric_training_dmbioProtAffinityEGNN_{datetime.now()}.log")
+    log_dir = os.path.join(args.checkPtPath, "fabric_logs")
+
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+        
+    log_dir = os.path.join(log_dir, f"fabric_training_dmbioProtAffinityEGNN_{formatted_datetime}.log")
     file_handler = logging.FileHandler(log_dir)
     file_handler.setLevel(logging.INFO)
     # Create a formatter and add it to the handler
@@ -209,7 +345,14 @@ if __name__ == "__main__":
     # Add the handler to the logger
     logger.addHandler(file_handler)
 
+    # Create a stream handler to print logs to the console
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)  # You can set the desired log level for console output
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
     try:
+        logger.info(f"Run version: {args.version}")
         main(logger, args)
     except Exception as e:
         logger.error(f"Error: {e}")
