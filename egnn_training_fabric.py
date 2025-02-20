@@ -20,7 +20,7 @@ import pandas as pd
 
 def save_checkpoint_callback(epoch, loss, model, optimizer, checkPtPath, version ,save_frequency=10):
     if (epoch + 1) % int(save_frequency) == 0:
-        model_path = f'{checkPtPath}/fabric_logs/version_{version}/checkpoints'
+        model_path = os.path.join(checkPtPath, "fabric", f"version_{version}", "checkpoints")
         if not os.path.exists(model_path):
             os.makedirs(model_path, exist_ok=True)
         model_path = os.path.join(model_path, f"EGNNModel_{epoch + 1}.pth")
@@ -66,9 +66,10 @@ def plot_training_history(loss_history, tpr_history, val_loss_history, val_tpr_h
     plt.title("Training History: Loss & TPR")
     fig.tight_layout()
 
-    image_path = f'{checkPtPath}/fabric_logs/version_{version}/checkpoints/image'
+    image_path = os.path.join(checkPtPath, "fabric", f"version_{version}", "checkpoints","image")
     if not os.path.exists(image_path):
         os.makedirs(image_path, exist_ok=True)
+
     image_path = os.path.join(image_path, "training_history.png")
     plt.savefig(image_path)
 
@@ -120,7 +121,7 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
             if batch_idx % 25 == 0:
                 fileLogger.info(f"Epoch {epoch}, Batch {batch_idx}: Loss = {loss.item():.4f}, Recall = {tpr.item():.4f}")
 
-         ### MORE LOGGING
+        
         model.eval()
         with torch.no_grad():
             loss_history[epoch] /= len(train_loader.dataset)
@@ -136,7 +137,7 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
                 val_loss_history[epoch] += loss.item()
                 tpr  = metric(pred, y_int)
                 val_tpr_history[epoch] += tpr.item()
-                loop_val.set_description(f"Validation:[{epoch}/{epochs}]")
+                loop_val.set_description(f"Validation:[{epoch+1}/{epochs}]")
                 loop_val.set_postfix(loss=loss.item())
 
             val_loss_history[epoch] /= len(train_loader.dataset)
@@ -188,16 +189,20 @@ def main(fileLogger, hparams):
     fileLogger.info(watermark(packages="torch,lightning", python=True))
     fileLogger.info(f"Torch CUDA available? {torch.cuda.is_available()}")
 
+    if not torch.cuda.is_available():
+        logger.error("CUDA not available, Fabric training not possible, exitting..")
+        return
+        
     device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
     device = torch.device(f'cuda:{device_count - 1}') if torch.cuda.is_available() else torch.device('cpu')
 
     precision="16-mixed"
 
-    if torch.cuda.is_bf16_supported():
+    if torch.cuda.is_bf16_supported() and hparams.bf16:
         logger.info("BF16 supported, setting precision to bf16 mixed")
         precision = "bf16-mixed"
     else:
-        logger.info("BF16 not supported, setting precision to 16 mixed")
+        logger.info("BF16 either not supported or not requested, setting precision to 16 mixed")
 
     fabric = L.Fabric(accelerator="cuda", devices=device_count, precision = precision)
     fabric.launch()
@@ -344,22 +349,19 @@ if __name__ == "__main__":
     parser.add_argument("--load_from_path", default=None)
     parser.add_argument("--optim", default='SGD')
     parser.add_argument("--lr", default=0.01)
+    parser.add_argument("--bf16", default=False)
 
     args = parser.parse_args()
 
     logger = logging.getLogger("dmbioProtAffinityEGNN_looger")
     logger.setLevel(logging.INFO)
     # Create a file handler
-    if not os.path.exists(args.checkPtPath + "/logs"):
-        os.makedirs(args.checkPtPath+ "/logs", exist_ok=True)
-
-    log_dir = os.path.join(args.checkPtPath, "fabric_logs")
-
+    log_dir = os.path.join(args.checkPtPath, "logs")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
-        
-    log_dir = os.path.join(log_dir, f"fabric_training_dmbioProtAffinityEGNN_{formatted_datetime}.log")
-    file_handler = logging.FileHandler(log_dir)
+
+    log_filepath = os.path.join(log_dir, f"fabric_training_dmbioProtAffinityEGNN_{formatted_datetime}.log")
+    file_handler = logging.FileHandler(log_filepath)
     file_handler.setLevel(logging.INFO)
     # Create a formatter and add it to the handler
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
