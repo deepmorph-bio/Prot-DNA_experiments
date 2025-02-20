@@ -20,7 +20,7 @@ import pandas as pd
 
 def save_checkpoint_callback(epoch, loss, model, optimizer, checkPtPath, version ,save_frequency=10):
     if (epoch + 1) % int(save_frequency) == 0:
-        model_path = os.path.join(checkPtPath,"fabric_logs",f"version_{version}","checkpoints")
+        model_path = f'{checkPtPath}/fabric_logs/version_{version}/checkpoints'
         if not os.path.exists(model_path):
             os.makedirs(model_path, exist_ok=True)
         model_path = os.path.join(model_path, f"EGNNModel_{epoch + 1}.pth")
@@ -66,7 +66,7 @@ def plot_training_history(loss_history, tpr_history, val_loss_history, val_tpr_h
     plt.title("Training History: Loss & TPR")
     fig.tight_layout()
 
-    image_path = os.path.join(checkPtPath,"fabric_logs",f"version_{version}","checkpoints","image")
+    image_path = f'{checkPtPath}/fabric_logs/version_{version}/checkpoints/image'
     if not os.path.exists(image_path):
         os.makedirs(image_path, exist_ok=True)
     image_path = os.path.join(image_path, "training_history.png")
@@ -114,7 +114,7 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
                 tpr  = metric(pred, y_int)
                 train_tpr_history[epoch] += tpr.item()
                 # Update progress bar
-                loop.set_description(f"Epoch [{epoch}/{epochs}]")
+                loop.set_description(f"Epoch [{epoch+1}/{epochs}]")
                 loop.set_postfix(loss=loss.item())
             
             if batch_idx % 25 == 0:
@@ -191,7 +191,15 @@ def main(fileLogger, hparams):
     device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
     device = torch.device(f'cuda:{device_count - 1}') if torch.cuda.is_available() else torch.device('cpu')
 
-    fabric = L.Fabric(accelerator="cuda", devices=device_count, precision="16-mixed")
+    precision="16-mixed"
+
+    if torch.cuda.is_bf16_supported():
+        logger.info("BF16 supported, setting precision to bf16 mixed")
+        precision = "bf16-mixed"
+    else:
+        logger.info("BF16 not supported, setting precision to 16 mixed")
+
+    fabric = L.Fabric(accelerator="cuda", devices=device_count, precision = precision)
     fabric.launch()
 
     torch.set_float32_matmul_precision('high')
@@ -240,24 +248,36 @@ def main(fileLogger, hparams):
         fileLogger.info(summary(model))
         
 
-    optimizer = torch.optim.SGD(
-     model.parameters(), 
-     lr=5e-4,
-     momentum=0.9,
-     weight_decay=1e-4)
+    # optimizer = torch.optim.SGD(
+    #  model.parameters(), 
+    #  lr=5e-4,
+    #  momentum=0.9,
+    #  weight_decay=1e-4)
+
+    #optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-16)
+    learning_rate = float(hparams.lr)
+
+    if hparams.optim == "SGD":
+        optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+    elif hparams.optim == "Adam":
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-16)
 
     if checkpoint:
         logger.info(f"Loading optimizer state dict from checkpoint")
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
 
-    lr_steps_per_epoch = len(train)
-    max_epochs = int(hparams.epoch)
+    
+    
+    # lr_steps_per_epoch = len(train)
+    # lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
+    #         max_lr=1e-3, 
+    #         steps_per_epoch = lr_steps_per_epoch , 
+    #         epochs=max_epochs)
 
-    lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
-            max_lr=1e-3, 
-            steps_per_epoch = lr_steps_per_epoch , 
-            epochs=max_epochs)
+    max_epochs = int(hparams.epoch)
+    num_steps = max_epochs * len(train_loader)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps)
 
     model, optimizer = fabric.setup(model, optimizer)
 
@@ -322,6 +342,8 @@ if __name__ == "__main__":
     parser.add_argument("--es_min_delta", default=0.000001)
     parser.add_argument("--es_patience", default=3)
     parser.add_argument("--load_from_path", default=None)
+    parser.add_argument("--optim", default='SGD')
+    parser.add_argument("--lr", default=0.01)
 
     args = parser.parse_args()
 
