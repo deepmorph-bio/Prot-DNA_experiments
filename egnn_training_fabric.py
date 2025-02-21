@@ -11,14 +11,14 @@ import logging
 from datetime import datetime
 import time
 from torch import tensor
-from torchmetrics.classification import BinaryRecall
+from torchmetrics.classification import BinaryRecall, BinaryPrecision
 from tqdm import tqdm
 from torchinfo import summary
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
-def save_checkpoint_callback(epoch, loss, model, optimizer, checkPtPath, version ,save_frequency=10):
+def save_checkpoint_callback(epoch, loss, model, optimizer, lr_scheduler, checkPtPath, version ,save_frequency=10):
     if (epoch + 1) % int(save_frequency) == 0:
         model_path = os.path.join(checkPtPath, "fabric", f"version_{version}", "checkpoints")
         if not os.path.exists(model_path):
@@ -28,6 +28,7 @@ def save_checkpoint_callback(epoch, loss, model, optimizer, checkPtPath, version
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': lr_scheduler.state_dict(),
             'loss': loss,
             'hidden_nf': model.hidden_nf,
             'n_layers': model.n_layers
@@ -88,7 +89,7 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
     checkptpath = kwargs.get("checkPtPath", "")
     version = kwargs.get("version", "1")
     save_frequency = kwargs.get("save_frequency", 10)
-    patience = kwargs.get("patience", 0)
+    patience = int(kwargs.get("patience", 0))
     min_delta = kwargs.get("min_delta", 0.00001)
 
     for epoch in range(epochs):
@@ -149,7 +150,7 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
         Recall = {val_tpr_history[epoch]:.4f}")        
 
         # Checkpoint Saving
-        save_checkpoint_callback(epoch, val_loss_history[epoch], model, optimizer, checkptpath, version, save_frequency)
+        save_checkpoint_callback(epoch, val_loss_history[epoch], model, optimizer, scheduler, checkptpath, version, save_frequency)
         # Early Stopping
         if val_loss_history[epoch] < best_val_loss - min_delta:
             best_val_loss = val_loss_history[epoch]
@@ -231,7 +232,7 @@ def main(fileLogger, hparams):
     checkpoint = None
     if hparams.load_from_path and os.path.exists(hparams.load_from_path):
         logger.info(f"Loading checkpt from {hparams.load_from_path}")
-        checkpoint = torch.load(hparams.load_from_path)
+        checkpoint = torch.load(hparams.load_from_path, map_location=device)
         if 'hidden_nf' in checkpoint:
             hidden_nf = checkpoint['hidden_nf']
         if 'n_layers' in checkpoint:
@@ -245,12 +246,7 @@ def main(fileLogger, hparams):
 
     loss_module = nn.BCEWithLogitsLoss()
 
-    if checkpoint:
-        logger.info(f"Loading state dict from checkpoint")
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model.to(device)
-        model.eval()
-        fileLogger.info(summary(model))
+    
         
 
     # optimizer = torch.optim.SGD(
@@ -260,19 +256,13 @@ def main(fileLogger, hparams):
     #  weight_decay=1e-4)
 
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-16)
+
     learning_rate = float(hparams.lr)
 
     if hparams.optim == "SGD":
         optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
     elif hparams.optim == "Adam":
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-16)
-
-    if checkpoint:
-        logger.info(f"Loading optimizer state dict from checkpoint")
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        
-
-    
     
     # lr_steps_per_epoch = len(train)
     # lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
@@ -286,10 +276,19 @@ def main(fileLogger, hparams):
 
     model, optimizer = fabric.setup(model, optimizer)
 
-    
+    if checkpoint:
+        logger.info(f"Loading state dict from checkpoint")
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.to(device)
+        model.train()
+        fileLogger.info(summary(model))
+
+        logger.info(f"Loading optimizer state dict from checkpoint")
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     # Instantiate callbacks
-    save_checkpoint = lambda epoch, loss, model, optimizer, checkptpath, version, save_frequency: save_checkpoint_callback(epoch, loss, model, optimizer, checkptpath, version ,save_frequency)
+    save_checkpoint = lambda epoch, loss, model, optimizer, lr_scheduler, checkptpath, version, save_frequency: save_checkpoint_callback(epoch, loss, model, optimizer, lr_scheduler, checkptpath, version ,save_frequency)
 
     #########################################
     ### 3 Finetuning
@@ -339,6 +338,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--dsConfigPath", default=None)
     parser.add_argument("--checkPtPath", default=None)
+    parser.add_argument("--logdir", default=None)
     parser.add_argument("--epoch", default=10)
     parser.add_argument("--hidden_nf", default=768)
     parser.add_argument("--n_layers", default=10)
@@ -356,11 +356,10 @@ if __name__ == "__main__":
     logger = logging.getLogger("dmbioProtAffinityEGNN_looger")
     logger.setLevel(logging.INFO)
     # Create a file handler
-    log_dir = os.path.join(args.checkPtPath, "logs")
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir, exist_ok=True)
+    if not os.path.exists(args.logdir):
+        os.makedirs(args.logdir, exist_ok=True)
 
-    log_filepath = os.path.join(log_dir, f"fabric_training_dmbioProtAffinityEGNN_{formatted_datetime}.log")
+    log_filepath = os.path.join(args.logdir, f"fabric_training_dmbioProtAffinityEGNN_{formatted_datetime}.log")
     file_handler = logging.FileHandler(log_filepath)
     file_handler.setLevel(logging.INFO)
     # Create a formatter and add it to the handler
