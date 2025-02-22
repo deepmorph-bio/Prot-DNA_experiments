@@ -209,7 +209,8 @@ def main(fileLogger, hparams):
     else:
         logger.info("BF16 either not supported or not requested, setting precision to 16 mixed")
 
-    fabric = L.Fabric(accelerator="cuda", devices=device_count, precision = precision)
+    strategy = 'ddp' if device_count > 1 else 'auto'
+    fabric = L.Fabric(accelerator="cuda", devices=device_count, precision = precision, strategy = strategy)
     fabric.launch()
 
     torch.set_float32_matmul_precision('high')
