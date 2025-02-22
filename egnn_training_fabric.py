@@ -96,8 +96,10 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
         model.train()
         loop = tqdm(enumerate(train_loader), total=len(train_loader), leave=True)
         #for batch in train_loader:
+        model.train()
         for batch_idx, batch in loop:
-            x, edge_index, pos, edge_attr ,y = batch.x, batch.edge_index, batch.pos, batch.edge_attr, batch.y
+            model.train()
+            x, edge_index, pos, edge_attr ,y = batch.x.to(device), batch.edge_index.to(device), batch.pos.to(device), batch.edge_attr.to(device), batch.y.to(device)
             h, x = model(x, pos, edge_index, edge_attr)
             loss = criterion(h, y)
             optimizer.zero_grad()
@@ -195,7 +197,9 @@ def main(fileLogger, hparams):
         return
         
     device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    device = torch.device(f'cuda:{device_count - 1}') if torch.cuda.is_available() else torch.device('cpu')
+    #device = torch.device(f'cuda:{device_count - 1}') if torch.cuda.is_available() else torch.device('cpu')
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    logger.info(f"Device count: {device_count}, Device: {device}")
 
     precision="16-mixed"
 
@@ -243,6 +247,8 @@ def main(fileLogger, hparams):
      hidden_nf=hidden_nf, out_node_nf=1, 
      in_edge_nf=1,attention=True, 
      n_layers=n_layers)
+    model.to(device)
+    model.train()
 
     loss_module = nn.BCEWithLogitsLoss()
 
