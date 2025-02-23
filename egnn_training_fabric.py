@@ -100,6 +100,7 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
         for batch_idx, batch in loop:
             model.train()
             x, edge_index, pos, edge_attr ,y = batch.x.to(device), batch.edge_index.to(device), batch.pos.to(device), batch.edge_attr.to(device), batch.y.to(device)
+            # Forward pass
             h, x = model(x, pos, edge_index, edge_attr)
             loss = criterion(h, y)
             optimizer.zero_grad()
@@ -201,6 +202,10 @@ def main(fileLogger, hparams):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.info(f"Device count: {device_count}, Device: {device}")
 
+    if device_count > 1:
+        os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'INFO'
+        logger.info(f'Device Count{device_count},  setting TORCH_DISTRIBUTED_DEBUG in INFO mode.')
+
     precision="16-mixed"
 
     if torch.cuda.is_bf16_supported() and hparams.bf16:
@@ -209,7 +214,7 @@ def main(fileLogger, hparams):
     else:
         logger.info("BF16 either not supported or not requested, setting precision to 16 mixed")
 
-    strategy = 'ddp' if device_count > 1 else 'auto'
+    strategy = 'ddp_find_unused_parameters_true' if device_count > 1 else 'auto'
     fabric = L.Fabric(accelerator="cuda", devices=device_count, precision = precision, strategy = strategy)
     fabric.launch()
 
