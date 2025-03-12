@@ -200,26 +200,32 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
             
     return loss_history, train_tpr_history, val_loss_history, val_tpr_history
 
-def test_loop(model, test_loader, device, fileLogger):
+def test_loop(fabric, model, test_loader, device, fileLogger):
+    is_main_process = fabric.global_rank == 0
     metric = BinaryRecall()
     metric.to(device)
     test_tpr_history = [0.0] * len(test_loader)
     with torch.no_grad():
         model.eval()
-        i=0
-        loop_val = tqdm(enumerate(test_loader), total=len(test_loader), leave=True)
+        loop_val = tqdm(enumerate(test_loader), total=len(test_loader), leave=True, disable=not is_main_process)
         for batch_idx, batch in loop_val:
             x, edge_index, pos, edge_attr ,y = batch.x, batch.edge_index, batch.pos, batch.edge_attr, batch.y
             h, x = model(x, pos, edge_index, edge_attr)
             pred = (torch.sigmoid(h).squeeze() >= 0.5).int().to(device) 
             y_int = y.to(torch.int64).squeeze()
             tpr  = metric(pred, y_int)
-            test_tpr_history[i] += tpr.item()
-            i+=1
-            loop_val.set_description(f"Testing:")
-            loop_val.set_postfix(TPR=tpr.item())
 
-    fileLogger.info(f"Test Recall: {sum(test_tpr_history)/len(test_loader):.4f}")
+            test_tpr_item = torch.tensor(tpr.item(), device=device)
+            agg_tpr = fabric.all_reduce(test_tpr_item, reduce_op="sum")
+
+            test_tpr_history[batch_idx] = agg_tpr.item()
+
+            if is_main_process:
+                loop_val.set_description(f"Testing:")
+                loop_val.set_postfix(TPR=tpr.item())
+    
+    if is_main_process:
+        fileLogger.info(f"Test Recall: {sum(test_tpr_history)/len(test_loader):.4f}")
 
 def main(fileLogger, hparams):
     fileLogger.info(f"hparams: {hparams}")
@@ -365,8 +371,10 @@ def main(fileLogger, hparams):
     fileLogger.info(f"Memory allocated: {torch.cuda.max_memory_allocated() / 1e9:.02f} GB")
 
     is_main_process = fabric.global_rank == 0
+    test_loop(fabric, model, test_loader, device, fileLogger)
+    
     if is_main_process:
-        test_loop(model, test_loader, device, fileLogger)
+        
 
         logger.info('******************************')
         logger.info(f'Loss history: {loss_history}')
