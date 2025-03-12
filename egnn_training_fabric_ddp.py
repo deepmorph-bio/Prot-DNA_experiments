@@ -95,6 +95,8 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
 
     for epoch in range(epochs):
         model.train()
+        epoch_train_losses = []
+        epoch_train_tprs = []
         # Only create progress bar on rank 0 process to avoid duplicate outputs
         is_main_process = fabric.global_rank == 0
 
@@ -113,45 +115,71 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
             optimizer.step()
             scheduler.step()
 
-            if is_main_process:
-                model.eval()
-                with torch.no_grad():
-                    # Process predictions
-                    pred = (torch.sigmoid(h).squeeze() >= 0.5).int().to(device) # Directly create tensor on correct device
-                    # Convert y to the correct format
-                    y_int = y.to(torch.int64).squeeze()
-                    loss_history[epoch] += loss.item()
-                    tpr  = metric(pred, y_int)
-                    train_tpr_history[epoch] += tpr.item()
-                    # Update progress bar
-                    loop.set_description(f"Epoch [{epoch+1}/{epochs}]")
-                    loop.set_postfix(loss=loss.item())
-                
-                if batch_idx % 25 == 0:
-                    fileLogger.info(f"Epoch {epoch}, Batch {batch_idx}: Loss = {loss.item():.4f}, Recall = {tpr.item():.4f}")
+            # Synchronize loss across processes for logging
+            train_loss_item = torch.tensor(loss.item(), device=device)
+            avg_train_loss = fabric.all_reduce(train_loss_item, reduce_op="mean")
+            epoch_train_losses.append(avg_train_loss.item())
 
-        if is_main_process:
             model.eval()
             with torch.no_grad():
-                loss_history[epoch] /= len(train_loader.dataset)
-                train_tpr_history[epoch] /= len(train_loader.dataset)
-                loop_val = tqdm(enumerate(train_loader), total=len(val_loader), leave=True, disable=not is_main_process)
-                for batch_idx, batch in loop_val:
-                    x, edge_index, pos, edge_attr ,y = batch.x, batch.edge_index, batch.pos, batch.edge_attr, batch.y
-                    h, x = model(x, pos, edge_index, edge_attr)
-                    loss = criterion(h, y)
-                    pred = (torch.sigmoid(h).squeeze() >= 0.5).int().to(device) 
-                    y_int = y.to(torch.int64).squeeze()
+                # Process predictions
+                pred = (torch.sigmoid(h).squeeze() >= 0.5).int().to(device) # Directly create tensor on correct device
+                # Convert y to the correct format
+                y_int = y.to(torch.int64).squeeze()
+                tpr  = metric(pred, y_int)
+                train_tpr_item = torch.tensor(tpr.item(), device=device)
+                agg_tpr = fabric.all_reduce(train_tpr_item, reduce_op="sum")
+                epoch_train_tprs.append(agg_tpr.item())
 
-                    val_loss_history[epoch] += loss.item()
-                    tpr  = metric(pred, y_int)
-                    val_tpr_history[epoch] += tpr.item()
+            # Update progress bar on main process only
+            if is_main_process:
+                loop.set_description(f"Epoch [{epoch+1}/{epochs}]")
+                loop.set_postfix(loss=avg_train_loss.item(), lr=scheduler.get_last_lr()[0])
+                if batch_idx % 25 == 0:
+                    fileLogger.info(f"Epoch {epoch}, Batch {batch_idx}: Loss = {avg_train_loss.item():.4f}, Recall = {agg_tpr.item():.4f}")
+     
+
+        if is_main_process:
+            loss_history[epoch] = sum(epoch_train_losses) / len(epoch_train_losses)
+            train_tpr_history[epoch] = sum(epoch_train_tprs) / len(epoch_train_tprs)
+
+        # Validation phases
+        model.eval()
+        val_losses = []
+        val_tprs = []
+
+        with torch.no_grad():
+            loop_val = tqdm(enumerate(train_loader), total=len(val_loader), leave=True, disable=not is_main_process)
+            for batch_idx, batch in loop_val:
+                x, edge_index, pos, edge_attr ,y = batch.x, batch.edge_index, batch.pos, batch.edge_attr, batch.y
+                h, x = model(x, pos, edge_index, edge_attr)
+                val_loss = criterion(h, y)
+                # Synchronize validation loss across processes
+                val_loss_item = torch.tensor(val_loss.item(), device=device)
+                avg_val_loss = fabric.all_reduce(val_loss_item, reduce_op="mean")
+                val_losses.append(avg_val_loss.item())
+
+                pred = (torch.sigmoid(h).squeeze() >= 0.5).int().to(device) 
+                y_int = y.to(torch.int64).squeeze()
+                val_tpr  = metric(pred, y_int)
+
+                val_tpr_item = torch.tensor(val_tpr.item(), device=device)
+                val_agg_tpr = fabric.all_reduce(val_tpr_item, reduce_op="sum")
+                val_tprs.append(val_agg_tpr.item())
+
+
+                if is_main_process:
                     loop_val.set_description(f"Validation:[{epoch+1}/{epochs}]")
-                    loop_val.set_postfix(loss=loss.item())
+                    loop_val.set_postfix(loss=avg_val_loss.item())
+                    # Calculate validation metrics
+            if val_losses:
+                val_loss_history[epoch] = sum(val_losses) / len(val_losses)
+                val_tpr_history[epoch] = sum(val_tprs) / len(val_tprs)
 
-                val_loss_history[epoch] /= len(train_loader.dataset)
-                val_tpr_history[epoch] /= len(train_loader.dataset) 
 
+
+
+        if is_main_process:
             fileLogger.info(f"Epoch {epoch}: Loss = {loss_history[epoch]:.4f}, \
             Recall = {train_tpr_history[epoch]:.4f} \
             Val Loss = {val_loss_history[epoch]:.4f}, \
