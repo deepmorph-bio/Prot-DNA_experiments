@@ -78,11 +78,17 @@ def plot_training_history(loss_history, tpr_history, val_loss_history, val_tpr_h
 def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_loader, epochs, fabric, device, fileLogger, save_checkpoint_callback, **kwargs):
     loss_history = [0.0] * epochs
     train_tpr_history = [0.0] * epochs
+    train_prec_history = [0.0] * epochs
+
     val_loss_history = [0.0] * epochs
     val_tpr_history = [0.0] * epochs
+    val_prec_history = [0.0] * epochs
 
     metric = BinaryRecall()
     metric.to(device)
+
+    metric_prec = BinaryPrecision()
+    metric_prec.to(device)
 
     best_val_loss = float("inf")
     early_stopping_counter = 0
@@ -97,6 +103,7 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
         model.train()
         epoch_train_losses = []
         epoch_train_tprs = []
+        epoch_train_prec = []
         # Only create progress bar on rank 0 process to avoid duplicate outputs
         is_main_process = fabric.global_rank == 0
 
@@ -128,26 +135,32 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
                 y_int = y.to(torch.int64).squeeze()
                 tpr  = metric(pred, y_int)
                 train_tpr_item = torch.tensor(tpr.item(), device=device)
-                agg_tpr = fabric.all_reduce(train_tpr_item, reduce_op="sum")
+                agg_tpr = fabric.all_reduce(train_tpr_item, reduce_op="mean")
                 epoch_train_tprs.append(agg_tpr.item())
+
+                prec  = metric_prec(pred, y_int)
+                train_prec_item = torch.tensor(prec.item(), device=device)
+                agg_prec = fabric.all_reduce(train_prec_item, reduce_op="mean")
+                epoch_train_prec.append(agg_prec.item())
 
             # Update progress bar on main process only
             if is_main_process:
                 loop.set_description(f"Epoch [{epoch+1}/{epochs}]")
                 loop.set_postfix(loss=avg_train_loss.item(), lr=scheduler.get_last_lr()[0])
                 if batch_idx % 25 == 0:
-                    fileLogger.info(f"Epoch {epoch}, Batch {batch_idx}: Loss = {avg_train_loss.item():.4f}, Recall = {agg_tpr.item():.4f}")
+                    fileLogger.info(f"Epoch {epoch}, Batch {batch_idx}: Loss = {avg_train_loss.item():.4f}, Recall = {agg_tpr.item():.4f}, Precision = {agg_prec.item():.4f}")
      
 
         if is_main_process:
             loss_history[epoch] = sum(epoch_train_losses) / len(epoch_train_losses)
             train_tpr_history[epoch] = sum(epoch_train_tprs) / len(epoch_train_tprs)
+            train_prec_history[epoch] = sum(epoch_train_prec) / len(epoch_train_prec)
 
         # Validation phases
         model.eval()
         val_losses = []
         val_tprs = []
-
+        val_precs = []
         with torch.no_grad():
             loop_val = tqdm(enumerate(train_loader), total=len(val_loader), leave=True, disable=not is_main_process)
             for batch_idx, batch in loop_val:
@@ -161,11 +174,16 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
 
                 pred = (torch.sigmoid(h).squeeze() >= 0.5).int().to(device) 
                 y_int = y.to(torch.int64).squeeze()
-                val_tpr  = metric(pred, y_int)
 
+                val_tpr  = metric(pred, y_int)
                 val_tpr_item = torch.tensor(val_tpr.item(), device=device)
-                val_agg_tpr = fabric.all_reduce(val_tpr_item, reduce_op="sum")
+                val_agg_tpr = fabric.all_reduce(val_tpr_item, reduce_op="mean")
                 val_tprs.append(val_agg_tpr.item())
+
+                val_prec  = metric_prec(pred, y_int)
+                val_prec_item = torch.tensor(val_prec.item(), device=device)
+                val_agg_prec = fabric.all_reduce(val_prec_item, reduce_op="mean")
+                val_precs.append(val_agg_prec.item())
 
 
                 if is_main_process:
@@ -175,7 +193,7 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
             if val_losses:
                 val_loss_history[epoch] = sum(val_losses) / len(val_losses)
                 val_tpr_history[epoch] = sum(val_tprs) / len(val_tprs)
-
+                val_prec_history[epoch] = sum(val_precs) / len(val_precs)
 
 
 
@@ -183,7 +201,8 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
             fileLogger.info(f"Epoch {epoch}: Loss = {loss_history[epoch]:.4f}, \
             Recall = {train_tpr_history[epoch]:.4f} \
             Val Loss = {val_loss_history[epoch]:.4f}, \
-            Recall = {val_tpr_history[epoch]:.4f}")        
+            Recall = {val_tpr_history[epoch]:.4f}, \
+            Precision = {val_prec_history[epoch]:.4f}")        
 
             # Checkpoint Saving
             save_checkpoint_callback(epoch, val_loss_history[epoch], model, optimizer, scheduler, checkptpath, version, save_frequency)
@@ -204,7 +223,12 @@ def test_loop(fabric, model, test_loader, device, fileLogger):
     is_main_process = fabric.global_rank == 0
     metric = BinaryRecall()
     metric.to(device)
+    metric_prec = BinaryPrecision()
+    metric_prec.to(device)
+
     test_tpr_history = [0.0] * len(test_loader)
+    test_prec_history = [0.0] * len(test_loader)
+
     with torch.no_grad():
         model.eval()
         loop_val = tqdm(enumerate(test_loader), total=len(test_loader), leave=True, disable=not is_main_process)
@@ -213,19 +237,24 @@ def test_loop(fabric, model, test_loader, device, fileLogger):
             h, x = model(x, pos, edge_index, edge_attr)
             pred = (torch.sigmoid(h).squeeze() >= 0.5).int().to(device) 
             y_int = y.to(torch.int64).squeeze()
+
             tpr  = metric(pred, y_int)
-
             test_tpr_item = torch.tensor(tpr.item(), device=device)
-            agg_tpr = fabric.all_reduce(test_tpr_item, reduce_op="sum")
-
+            agg_tpr = fabric.all_reduce(test_tpr_item, reduce_op="mean")
             test_tpr_history[batch_idx] = agg_tpr.item()
+
+            prec  = metric_prec(pred, y_int)
+            test_prec_item = torch.tensor(prec.item(), device=device)
+            agg_prec = fabric.all_reduce(test_prec_item, reduce_op="mean")
+            test_prec_history[batch_idx] = agg_prec.item()
+
 
             if is_main_process:
                 loop_val.set_description(f"Testing:")
                 loop_val.set_postfix(TPR=tpr.item())
     
     if is_main_process:
-        fileLogger.info(f"Test Recall: {sum(test_tpr_history)/len(test_loader):.4f}")
+        fileLogger.info(f"Test Recall: {sum(test_tpr_history)/len(test_loader):.4f}, Test Precision: {sum(test_prec_history)/len(test_loader):.4f}")
 
 def main(fileLogger, hparams):
     fileLogger.info(f"hparams: {hparams}")
