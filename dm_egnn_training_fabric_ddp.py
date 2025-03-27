@@ -3,7 +3,7 @@ from lightning.fabric.strategies.ddp import DDPStrategy
 from watermark import watermark
 import torch
 import torch.nn as nn
-import Src.model.egnn_clean as egnn
+import Src.model.dm_egnn_clean as egnn
 from Src.data.dmBioProtDatasetLoader import dmbioProtDatasetloader
 import traceback
 from argparse import ArgumentParser
@@ -99,6 +99,9 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
     patience = int(kwargs.get("patience", 0))
     min_delta = kwargs.get("min_delta", 0.00001)
 
+    # Maximum gradient norm for clipping
+    max_grad_norm = kwargs.get("max_grad_norm", 1.0)
+
     for epoch in range(epochs):
         model.train()
         epoch_train_losses = []
@@ -118,6 +121,10 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
             loss = criterion(h, y)
             optimizer.zero_grad()
             fabric.backward(loss)
+
+            # Add gradient clipping before optimizer step - NEW
+            if max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
             optimizer.step()
             scheduler.step()
@@ -303,7 +310,7 @@ def main(fileLogger, hparams):
     
     hidden_nf = int(hparams.hidden_nf)
     n_layers = int(hparams.n_layers)
-    
+    input_scaling = int(hparams.input_scaling)
     #########################################
     ### 2 Initializing the Model
     #########################################
@@ -317,10 +324,22 @@ def main(fileLogger, hparams):
             n_layers = checkpoint['n_layers']
 
 
-    model = egnn.EGNN(in_node_nf=dataset_loader.num_features,
-     hidden_nf=hidden_nf, out_node_nf=1, 
-     in_edge_nf=1,attention=True, 
-     n_layers=n_layers)
+    # model = egnn.EGNN(in_node_nf=dataset_loader.num_features,
+    #  hidden_nf=hidden_nf, out_node_nf=1, 
+    #  in_edge_nf=1,attention=True, 
+    #  n_layers=n_layers)
+    model = egnn.EGNN(
+        in_node_nf=dataset_loader.num_features,
+        hidden_nf=hidden_nf, 
+        out_node_nf=1,
+        in_edge_nf=1,
+        attention=True,
+        n_layers=n_layers,
+        normalize=True,
+        input_scaling=input_scaling,  # Use hidden_nf as the intermediate dimension
+        coord_scale=1.0,  # Scale coordinates to a reasonable range
+        layer_norm=True  # Enable layer normalization
+    )
     model.to(device)
     model.train()
 
@@ -334,15 +353,18 @@ def main(fileLogger, hparams):
     #  lr=5e-4,
     #  momentum=0.9,
     #  weight_decay=1e-4)
-
+    
     #optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-16)
 
     learning_rate = float(hparams.lr)
 
     if hparams.optim == "SGD":
-        optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate,
+            momentum=0.9,
+            weight_decay=1e-5)
     elif hparams.optim == "Adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-16)
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, 
+        weight_decay=1e-5)
     
     # lr_steps_per_epoch = len(train)
     # lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
@@ -352,7 +374,20 @@ def main(fileLogger, hparams):
 
     max_epochs = int(hparams.epoch)
     num_steps = max_epochs * len(train_loader)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps)
+
+    if hparams.lr_scheduler == "cosine":
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps)
+    else:
+    # Use OneCycleLR for better convergence
+        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=float(hparams.lr),
+            total_steps=num_steps,
+            pct_start=0.3,
+            div_factor=25,             # initial_lr = max_lr/div_factor
+            final_div_factor=10000,    # final_lr = initial_lr/final_div_factor
+            anneal_strategy='cos'
+        )
 
     model, optimizer = fabric.setup(model, optimizer)
 
@@ -390,7 +425,8 @@ def main(fileLogger, hparams):
     version = hparams.version,
     save_frequency = hparams.save_frequency,
     min_delta  = hparams.es_min_delta,
-    patience = hparams.es_patience
+    patience = hparams.es_patience,
+    max_grad_norm = 1.0
     )
 
     end = time.time()
@@ -425,6 +461,7 @@ if __name__ == "__main__":
     parser.add_argument("--logdir", default=None)
     parser.add_argument("--epoch", default=10)
     parser.add_argument("--hidden_nf", default=768)
+    parser.add_argument("--input_scaling", default=1024)
     parser.add_argument("--n_layers", default=10)
     parser.add_argument("--version", default=formatted_datetime)
     parser.add_argument("--save_frequency", default=10)
@@ -434,7 +471,8 @@ if __name__ == "__main__":
     parser.add_argument("--optim", default='SGD')
     parser.add_argument("--lr", default=0.01)
     parser.add_argument("--bf16", default=False)
-    
+    parser.add_argument("--lr_scheduler", default="cosine")
+
     args = parser.parse_args()
 
     logger = logging.getLogger("dmbioProtAffinityEGNN_looger")
