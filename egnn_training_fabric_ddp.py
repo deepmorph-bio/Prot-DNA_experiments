@@ -98,6 +98,7 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
     save_frequency = kwargs.get("save_frequency", 10)
     patience = int(kwargs.get("patience", 0))
     min_delta = kwargs.get("min_delta", 0.00001)
+    max_grad_norm = kwargs.get("max_grad_norm", 1.0)
 
     for epoch in range(epochs):
         model.train()
@@ -118,6 +119,10 @@ def training_loop(model, criterion, optimizer, scheduler ,train_loader, val_load
             loss = criterion(h, y)
             optimizer.zero_grad()
             fabric.backward(loss)
+
+            # Add gradient clipping before optimizer step - NEW
+            # if max_grad_norm > 0:
+            #     torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
             optimizer.step()
             scheduler.step()
@@ -340,9 +345,13 @@ def main(fileLogger, hparams):
     learning_rate = float(hparams.lr)
 
     if hparams.optim == "SGD":
-        optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.SGD(
+            model.parameters(), 
+            lr=float(hparams.lr))
     elif hparams.optim == "Adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-16)
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, 
+        weight_decay=1e-5)
+
     
     # lr_steps_per_epoch = len(train)
     # lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
@@ -352,7 +361,30 @@ def main(fileLogger, hparams):
 
     max_epochs = int(hparams.epoch)
     num_steps = max_epochs * len(train_loader)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps)
+    if hparams.lr_scheduler == "cosine":
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps, eta_min = 0.001)
+    elif hparams.lr_scheduler == "cyclic":
+        lr_scheduler = torch.optim.lr_scheduler.CyclicLR(
+                    optimizer,
+                    base_lr=float(hparams.lr),            # Your stable base learning rate
+                    max_lr=0.04,               # Maximum learning rate (try ~2-3x your base rate)
+                    step_size_up=5 * len(train_loader),  # Steps to reach max_lr (5 epochs)
+                    step_size_down=15 * len(train_loader),  # Steps to return to base_lr (15 epochs)
+                    mode='triangular2',        # Decrease amplitude by half each cycle
+                    cycle_momentum=False       # Don't cycle momentum
+                )
+    else:
+    # Use OneCycleLR for better convergence
+        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=float(hparams.lr),
+            total_steps=num_steps,
+            pct_start=0.3,
+            div_factor=25,             # initial_lr = max_lr/div_factor
+            final_div_factor=10000,    # final_lr = initial_lr/final_div_factor
+            anneal_strategy='cos'
+        )
+
 
     model, optimizer = fabric.setup(model, optimizer)
 
@@ -390,7 +422,8 @@ def main(fileLogger, hparams):
     version = hparams.version,
     save_frequency = hparams.save_frequency,
     min_delta  = hparams.es_min_delta,
-    patience = hparams.es_patience
+    patience = hparams.es_patience,
+    max_grad_norm = 1.0
     )
 
     end = time.time()
@@ -434,6 +467,7 @@ if __name__ == "__main__":
     parser.add_argument("--optim", default='SGD')
     parser.add_argument("--lr", default=0.01)
     parser.add_argument("--bf16", default=False)
+    parser.add_argument("--lr_scheduler", default="cosine")
     
     args = parser.parse_args()
 
