@@ -362,7 +362,8 @@ def main(fileLogger, hparams):
     max_epochs = int(hparams.epoch)
     num_steps = max_epochs * len(train_loader)
     if hparams.lr_scheduler == "cosine":
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps, eta_min = 0.001)
+        eta_min = float(hparams.eta_min)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps, eta_min = eta_min)
     elif hparams.lr_scheduler == "cyclic":
         lr_scheduler = torch.optim.lr_scheduler.CyclicLR(
                     optimizer,
@@ -468,7 +469,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", default=0.01)
     parser.add_argument("--bf16", default=False)
     parser.add_argument("--lr_scheduler", default="cosine")
-    
+    parser.add_argument("--eta_min", default=0.001)
     args = parser.parse_args()
 
     logger = logging.getLogger("dmbioProtAffinityEGNN_looger")
