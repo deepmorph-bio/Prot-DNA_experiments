@@ -364,6 +364,14 @@ def main(fileLogger, hparams):
     if hparams.lr_scheduler == "cosine":
         eta_min = float(hparams.eta_min)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps, eta_min = eta_min)
+    elif hparams.lr_scheduler == "cosine_warmrestart":
+        eta_min = float(hparams.eta_min)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer,
+                    T_0=50,           # First restart occurs after 50 epochs
+                    T_mult=2,         # Each restart cycle is twice as long as the previous
+                    eta_min=eta_min     # Minimum learning rate
+                )
     elif hparams.lr_scheduler == "cyclic":
         lr_scheduler = torch.optim.lr_scheduler.CyclicLR(
                     optimizer,
@@ -396,9 +404,11 @@ def main(fileLogger, hparams):
         model.train()
         fileLogger.info(summary(model))
 
-        logger.info(f"Loading optimizer state dict from checkpoint")
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        load_optim_dict = bool(hparams.load_optim_dict)
+        if load_optim_dict:
+            logger.info(f"Loading optimizer state dict from checkpoint")
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     # Instantiate callbacks
     save_checkpoint = lambda epoch, loss, model, optimizer, lr_scheduler, checkptpath, version, save_frequency: save_checkpoint_callback(epoch, loss, model, optimizer, lr_scheduler, checkptpath, version ,save_frequency)
@@ -465,6 +475,7 @@ if __name__ == "__main__":
     parser.add_argument("--es_min_delta", default=0.000001)
     parser.add_argument("--es_patience", default=3)
     parser.add_argument("--load_from_path", default=None)
+    parser.add_argument("--load_optim_dict", default=False)
     parser.add_argument("--optim", default='SGD')
     parser.add_argument("--lr", default=0.01)
     parser.add_argument("--bf16", default=False)
